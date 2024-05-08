@@ -427,9 +427,12 @@ class LookaheadPreTrainedModel(PreTrainedModel):
 
         elif generation_mode == GenerationMode.LOOKAHEAD_GENERATION:
             # 11. run greedy search
+            #    print("do_sample")
+            logits_warper = self._get_logits_warper(generation_config)
             return self.lookahead_generation(
                 input_ids,
                 logits_processor=logits_processor,
+                logits_warper = logits_warper,
                 stopping_criteria=stopping_criteria,
                 pad_token_id=generation_config.pad_token_id,
                 eos_token_id=generation_config.eos_token_id,
@@ -768,6 +771,7 @@ class LookaheadPreTrainedModel(PreTrainedModel):
             is_encoder_decoder: bool = False,
             standardize_cache_format: bool = False,
             logits_processor: Optional[LogitsProcessorList] = None,
+            logits_warper = None,
             input_ids: Optional[torch.LongTensor] = None,
     ) -> Dict[str, Any]:
         # update past_key_values
@@ -784,11 +788,17 @@ class LookaheadPreTrainedModel(PreTrainedModel):
             next_token_logits = outputs.logits[:, -1]
             # pre-process distribution
             next_tokens_scores = logits_processor(update_input_ids, next_token_logits)
+            next_tokens_scores = logits_warper(update_input_ids, next_tokens_scores)
+            #print("next_token_logits:", next_token_logits)
+            #print("next_tokens_scores:", next_tokens_scores)
             if decoding_kwargs.get('do_sample', False):
+                #print("do_sample")
                 probs = nn.functional.softmax(next_tokens_scores, dim=-1)
                 next_tokens = torch.multinomial(probs, num_samples=1)
             else:
+                #print("not not do_sample")
                 next_tokens = torch.argmax(next_tokens_scores, dim=-1, keepdim=True).long()
+            #print("next_tokens:", next_tokens)
             next_token_list = next_tokens.tolist()
             update_input_ids = torch.cat([update_input_ids, next_tokens], dim=1)
             model_kwargs['update_input_ids'] = update_input_ids
@@ -803,8 +813,10 @@ class LookaheadPreTrainedModel(PreTrainedModel):
                 words = '' if tokenizer is None else tokenizer.decode(next_token_list[0])
                 print(f'size:0 query:{decoding_qids} next_token:{next_token_list[0]} accept_word:{words}')
         else:
+            #print("len(draft_ids) !!!!!===== 0")
             draft_masks = decoding_kwargs['decoding_masks'][1:, 1:]
             branch_lengths = np.sum(draft_masks, axis=1)
+            #print("branch_lengths:", branch_lengths)
             max_branch_length = np.max(branch_lengths)
             leaf_indices = []
             for i, l in enumerate(branch_lengths):
@@ -829,9 +841,12 @@ class LookaheadPreTrainedModel(PreTrainedModel):
                     logit_index = 0
                 else:
                     logit_index = mask_indices[0][i]+1
-
+                #print("max_branch_length:", max_branch_length, "logit_index:", logit_index)
                 next_token_logits = logits[:, logit_index]
                 next_tokens_scores = logits_processor(update_input_ids, next_token_logits)
+                next_tokens_scores = logits_warper(update_input_ids, next_tokens_scores)
+                #print("next_token_logits:", next_token_logits)
+                #print("next_tokens_scores:", next_tokens_scores)
                 if decoding_kwargs.get('do_sample', False):
                     probs = nn.functional.softmax(next_tokens_scores, dim=-1)
                     next_tokens = torch.multinomial(probs, num_samples=1)
@@ -948,6 +963,7 @@ class LookaheadPreTrainedModel(PreTrainedModel):
             self,
             input_ids: torch.LongTensor,
             logits_processor: Optional[LogitsProcessorList] = None,
+            logits_warper = None,
             stopping_criteria: Optional[StoppingCriteriaList] = None,
             max_length: Optional[int] = None,
             pad_token_id: Optional[int] = None,
@@ -1085,6 +1101,7 @@ class LookaheadPreTrainedModel(PreTrainedModel):
         # init lookahead cache
         if not hasattr(self, 'lookahead_cache'):
             self.lookahead_cache = LookaheadCache()
+            #self.lookahead_cache = LookaheadCache(debug=True)
         self.lookahead_cache.eos_ids = eos_token_id
         self.lookahead_cache.stop_words = model_kwargs['decoding_kwargs'].get('stop_words', {})
 
@@ -1169,7 +1186,11 @@ class LookaheadPreTrainedModel(PreTrainedModel):
                     break
 
             # prepare model inputs
+            #print("-----------------------------input_ids.shape:",input_ids.shape)
             model_inputs = self.lookahead_prepare_inputs_for_generation(input_ids, **model_kwargs)
+            #if("decoding_ids" in model_inputs["decoding_kwargs"].keys()):
+            #    print("model_inputs.decoding_ids:", model_inputs["decoding_kwargs"]["decoding_ids"])
+            #print("model_inputs.input_ids:", model_inputs["input_ids"])
             decoding_kwargs = model_inputs.pop('decoding_kwargs', {})
 
             # forward pass to get next token
@@ -1179,7 +1200,6 @@ class LookaheadPreTrainedModel(PreTrainedModel):
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
             )
-
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need
 
@@ -1189,7 +1209,8 @@ class LookaheadPreTrainedModel(PreTrainedModel):
                 model_kwargs,
                 is_encoder_decoder=self.config.is_encoder_decoder,
                 input_ids=input_ids,
-                logits_processor=logits_processor
+                logits_processor=logits_processor,
+                logits_warper = logits_warper
             )
 
             next_tokens_scores = model_kwargs['next_tokens_scores']
