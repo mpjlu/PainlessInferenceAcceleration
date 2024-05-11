@@ -724,6 +724,8 @@ class LookaheadPreTrainedModel(PreTrainedModel):
                                                                                                         min_output_size=min_output_size,
                                                                                                         mode=mode,
                                                                                                         idx=0)
+            print("decoding_ids.len=", len(decoding_ids))
+            print("decoding_ids sizes =", sizes)
             qt = time.time() - ts
             decoding_input_ids = torch.tensor([decoding_ids], dtype=torch.long, device=input_ids.device)
             prefix_length = input_ids.size(-1) - 1
